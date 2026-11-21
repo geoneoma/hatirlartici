@@ -68,54 +68,76 @@ object Scheduler {
 }
 
 object Notifier {
-    private const val CH = "reminders_v1"
+    private const val CH = "reminders_v2"
 
     private fun manager(ctx: Context): NotificationManager =
         ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
+    fun ensureChannel(ctx: Context) {
+        val nm = manager(ctx)
+        if (nm.getNotificationChannel(CH) != null) return
+        val ch = NotificationChannel(CH, "Hatırlatmalar", NotificationManager.IMPORTANCE_HIGH)
+        ch.description = "Zamanı gelen hatırlatmalar"
+        ch.setSound(
+            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+        )
+        ch.enableVibration(true)
+        ch.vibrationPattern = longArrayOf(0, 500, 300, 500)
+        ch.lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+        nm.createNotificationChannel(ch)
+    }
+
     fun show(ctx: Context, r: Reminder) {
         val nm = manager(ctx)
-        if (nm.getNotificationChannel(CH) == null) {
-            val ch = NotificationChannel(CH, "Hatırlatmalar", NotificationManager.IMPORTANCE_HIGH)
-            ch.setSound(
-                RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build()
-            )
-            ch.enableVibration(true)
-            ch.vibrationPattern = longArrayOf(0, 500, 300, 500)
-            nm.createNotificationChannel(ch)
-        }
+        try {
+            ensureChannel(ctx)
 
-        val open = PendingIntent.getActivity(
-            ctx, r.id, Intent(ctx, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        fun act(action: String, code: Int): PendingIntent {
-            val i = Intent(ctx, ActionReceiver::class.java)
-            i.action = action
-            i.putExtra("id", r.id)
-            return PendingIntent.getBroadcast(
-                ctx, r.id * 4 + code, i,
+            val open = PendingIntent.getActivity(
+                ctx, r.id, Intent(ctx, MainActivity::class.java),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
-        }
 
-        val n = Notification.Builder(ctx, CH)
-            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-            .setContentTitle("Hatırlatma")
-            .setContentText(r.text)
-            .setStyle(Notification.BigTextStyle().bigText(r.text))
-            .setContentIntent(open)
-            .setCategory(Notification.CATEGORY_ALARM)
-            .setAutoCancel(false)
-            .addAction(0, "✔ Yaptım", act(ActionReceiver.DONE, 1))
-            .addAction(0, "10 dk ertele", act(ActionReceiver.SNOOZE, 2))
-            .build()
-        nm.notify(r.id, n)
+            fun act(action: String, code: Int): PendingIntent {
+                val i = Intent(ctx, ActionReceiver::class.java)
+                i.action = action
+                i.putExtra("id", r.id)
+                return PendingIntent.getBroadcast(
+                    ctx, r.id * 4 + code, i,
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+            }
+
+            val n = Notification.Builder(ctx, CH)
+                .setSmallIcon(R.drawable.ic_notif)
+                .setColor(0xFF7C5CFF.toInt())
+                .setContentTitle("Hatırlatma")
+                .setContentText(r.text)
+                .setStyle(Notification.BigTextStyle().bigText(r.text))
+                .setContentIntent(open)
+                .setCategory(Notification.CATEGORY_ALARM)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
+                .setAutoCancel(false)
+                .addAction(0, "✔ Yaptım", act(ActionReceiver.DONE, 1))
+                .addAction(0, "10 dk ertele", act(ActionReceiver.SNOOZE, 2))
+                .build()
+            nm.notify(r.id, n)
+
+            val chan = nm.getNotificationChannel(CH)
+            val msg = if (!nm.areNotificationsEnabled()) {
+                "bildirim izni KAPALI, gösterilemedi"
+            } else if (chan != null && chan.importance == NotificationManager.IMPORTANCE_NONE) {
+                "bildirim kanalı KAPALI, gösterilemedi"
+            } else {
+                "bildirim gönderildi"
+            }
+            Diag.record(ctx, msg)
+        } catch (e: Exception) {
+            Diag.record(ctx, "HATA: " + e.javaClass.simpleName + " " + (e.message ?: ""))
+        }
     }
 
     fun cancel(ctx: Context, id: Int) {
@@ -126,7 +148,12 @@ object Notifier {
 class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         val id = intent.getIntExtra("id", -1)
-        val r = Store.find(ctx, id) ?: return
+        Diag.record(ctx, "alarm tetiklendi")
+        val r = Store.find(ctx, id)
+        if (r == null) {
+            Diag.record(ctx, "alarm tetiklendi ama hatırlatma bulunamadı")
+            return
+        }
         if (r.done) return
 
         when (intent.action) {

@@ -88,3 +88,21 @@ object Store {
         saveAll(ctx, all(ctx).filter { it.id != id })
     }
 }
+
+/** Bildirim sorunlarını anlamak için: son alarmın ne zaman çaldığı ve sonucu. */
+object Diag {
+    private const val PREFS = "hatirlatici"
+
+    fun record(ctx: Context, msg: String) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putLong("diag_time", System.currentTimeMillis())
+            .putString("diag_msg", msg)
+            .apply()
+    }
+
+    fun time(ctx: Context): Long =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong("diag_time", 0L)
+
+    fun msg(ctx: Context): String =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("diag_msg", "") ?: ""
+}
