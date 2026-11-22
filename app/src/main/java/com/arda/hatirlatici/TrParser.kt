@@ -3,7 +3,14 @@ package com.arda.hatirlatici
 import java.util.Calendar
 import java.util.Locale
 
-data class Parsed(val text: String, val time: Long?, val repeat: String)
+data class Parsed(
+    val text: String,
+    val time: Long?,
+    val repeat: String,
+    val place: String = "",
+    val trigger: String = "ENTER",
+    val countdown: Boolean = false
+)
 
 /**
  * Türkçe konuşma/yazıdan zaman ve hatırlatma metnini ayıklar.
@@ -72,13 +79,15 @@ object TrParser {
         return null
     }
 
-    fun parse(input: String, now: Long = System.currentTimeMillis()): Parsed {
+    fun parse(input: String, places: List<String> = emptyList(), now: Long = System.currentTimeMillis()): Parsed {
         val t = input.replace('’', '\'').replace('‘', '\'').lowercase(tr)
             .split(Regex("\\s+"))
             .map { it.trim(',', ';', '!', '?', '.', '"', '“', '”') }
             .filter { it.isNotEmpty() }
         val n = t.size
         val used = BooleanArray(n)
+        // "geri sayım" geçiyor mu? ("25 dakika geri sayım", "geri sayım sınav 15 ocak")
+        val cd = (0 until n).any { k -> t[k] == "geri" && k + 1 < n && t[k + 1].startsWith("sayım") }
 
         var relMs: Long? = null
         var dayOffset: Int? = null
@@ -89,6 +98,8 @@ object TrParser {
         var minute = 0
         var daypart: String? = null
         var repeat = "NONE"
+        var place = ""
+        var trigger = "ENTER"
 
         var i = 0
         while (i < n) {
@@ -96,6 +107,10 @@ object TrParser {
             val nx = if (i + 1 < n) t[i + 1] else ""
             val nx2 = if (i + 2 < n) t[i + 2] else ""
             val prevSaat = i > 0 && t[i - 1] == "saat"
+
+            if (w == "geri" && nx.startsWith("sayım")) {
+                used[i] = true; used[i + 1] = true; i += 2; continue
+            }
 
             // --- tekrar: "her gün", "her salı", "her sabah" ---
             if (w == "hergün") {
@@ -120,6 +135,40 @@ object TrParser {
                 }
             }
 
+            // --- aralıklı tekrar: "aralıklı tekrar ingilizce kelimeler" ---
+            if (w.startsWith("aralıklı")) {
+                repeat = "SPACED"
+                used[i] = true
+                i++
+                if (i < n && t[i].startsWith("tekrar")) {
+                    used[i] = true
+                    i++
+                }
+                continue
+            }
+
+            // --- konum: "eve girince", "evden çıkınca" (kayıtlı yerlerle) ---
+            if (places.isNotEmpty() && nx.isNotEmpty()) {
+                val enter = nx.startsWith("girin") || nx.startsWith("gelin") || nx.startsWith("varın") ||
+                    nx.startsWith("ulaşın") || nx.startsWith("yaklaşın") || nx.startsWith("gidin") ||
+                    nx.startsWith("girdiğ") || nx.startsWith("geldiğ")
+                val exit = nx.startsWith("çıkın") || nx.startsWith("ayrılın") || nx.startsWith("çıktığ")
+                if (enter || exit) {
+                    val hit = places.firstOrNull { pl ->
+                        val q = pl.trim().lowercase(tr).substringBefore(' ')
+                        q.isNotEmpty() && w.startsWith(q) && w.length - q.length <= 3
+                    }
+                    if (hit != null) {
+                        place = hit
+                        trigger = if (exit) "EXIT" else "ENTER"
+                        used[i] = true
+                        used[i + 1] = true
+                        i += 2
+                        continue
+                    }
+                }
+            }
+
             // --- "yarım saat sonra" ---
             if (w == "yarım" && nx.startsWith("saat") && isAfter(nx2)) {
                 relMs = (relMs ?: 0L) + 30 * 60_000L
@@ -130,16 +179,18 @@ object TrParser {
             val num = readNumber(t, i)
             if (num != null) {
                 val j = i + num.second
-                if (j + 1 < n && isAfter(t[j + 1])) {
+                if (j < n) {
                     val u = t[j]
                     val unit = if (u.startsWith("dakika") || u == "dk") 60_000L
                     else if (u.startsWith("saat")) 3_600_000L
                     else if (u.startsWith("gün")) 86_400_000L
                     else if (u.startsWith("hafta")) 604_800_000L
                     else 0L
-                    if (unit > 0L) {
+                    val hasAfter = j + 1 < n && isAfter(t[j + 1])
+                    if (unit > 0L && (hasAfter || cd)) {
+                        val end = if (hasAfter) j + 2 else j + 1
                         relMs = (relMs ?: 0L) + num.first * unit
-                        used.fill(true, i, j + 2); i = j + 2; continue
+                        used.fill(true, i, end); i = end; continue
                     }
                 }
                 if (j < n && num.second == 1 && num.first in 1..31) {
@@ -268,7 +319,8 @@ object TrParser {
                 }
             }
             if (h == null && (hasDate || repeat != "NONE")) {
-                h = 9; mi = 0
+                h = if (cd) 0 else 9
+                mi = 0
             }
             if (h != null) {
                 val c = Calendar.getInstance()
@@ -277,7 +329,9 @@ object TrParser {
                 c.set(Calendar.MINUTE, mi)
                 c.set(Calendar.SECOND, 0)
                 c.set(Calendar.MILLISECOND, 0)
-                if (dmv != null) {
+                if (repeat == "SPACED") {
+                    c.add(Calendar.DAY_OF_YEAR, 1)
+                } else if (dmv != null) {
                     c.set(Calendar.MONTH, dmv.second)
                     c.set(Calendar.DAY_OF_MONTH, dmv.first)
                     if (c.timeInMillis <= now) c.add(Calendar.YEAR, 1)
@@ -302,7 +356,8 @@ object TrParser {
             !used[idx] && !s.startsWith("hatırlat") && s !in skip
         }
         var text = words.joinToString(" ").trim()
-        text = if (text.isEmpty()) "Hatırlatma" else text.replaceFirstChar { it.titlecase(tr) }
-        return Parsed(text, target, repeat)
+        val emptyName = if (cd) "Geri sayım" else "Hatırlatma"
+        text = if (text.isEmpty()) emptyName else text.replaceFirstChar { it.titlecase(tr) }
+        return Parsed(text, if (place.isNotEmpty()) null else target, repeat, place, trigger, cd)
     }
 }

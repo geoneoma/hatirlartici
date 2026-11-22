@@ -11,8 +11,8 @@ android {
         applicationId = "com.arda.hatirlatici"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 4
+        versionName = "1.3"
     }
 
     signingConfigs {
@@ -36,4 +36,8 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+}
+
+dependencies {
+    implementation("com.google.android.gms:play-services-location:21.3.0")
 }

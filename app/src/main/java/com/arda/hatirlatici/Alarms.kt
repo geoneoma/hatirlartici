@@ -9,10 +9,23 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
-import android.media.RingtoneManager
+import android.net.Uri
 import java.util.Calendar
 
-/** Tekrarlayan hatırlatmanın bir sonraki zamanını hesaplar. */
+/** Aralıklı tekrar: 1, 3, 7 ve 21. günlerde hatırlatır. */
+object Spaced {
+    val DAYS = intArrayOf(1, 3, 7, 21)
+
+    /** stage: şimdi çalan tekrarın numarası (1..3). Bir sonraki tekrarın zamanını verir. */
+    fun next(time: Long, stage: Int): Long {
+        val c = Calendar.getInstance()
+        c.timeInMillis = time
+        c.add(Calendar.DAY_OF_YEAR, DAYS[stage] - DAYS[stage - 1])
+        return c.timeInMillis
+    }
+}
+
+/** Günlük/haftalık tekrarın bir sonraki zamanı. */
 fun advance(time: Long, repeat: String): Long {
     val c = Calendar.getInstance()
     c.timeInMillis = time
@@ -50,7 +63,8 @@ object Scheduler {
     }
 
     fun schedule(ctx: Context, r: Reminder) {
-        if (!r.done) set(ctx, r.time, pi(ctx, r.id, false))
+        if (r.done || r.isLocation()) return
+        set(ctx, r.time, pi(ctx, r.id, false))
     }
 
     fun nag(ctx: Context, r: Reminder, minutes: Int) {
@@ -68,25 +82,28 @@ object Scheduler {
 }
 
 object Notifier {
-    private const val CH = "reminders_v2"
+    private const val CH = "reminders_v3"
 
     private fun manager(ctx: Context): NotificationManager =
         ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
     fun ensureChannel(ctx: Context) {
         val nm = manager(ctx)
+        // eski (alarm sesli) kanalları kaldır; kanal sesi sonradan değiştirilemez
+        nm.deleteNotificationChannel("reminders_v1")
+        nm.deleteNotificationChannel("reminders_v2")
         if (nm.getNotificationChannel(CH) != null) return
         val ch = NotificationChannel(CH, "Hatırlatmalar", NotificationManager.IMPORTANCE_HIGH)
-        ch.description = "Zamanı gelen hatırlatmalar"
+        ch.description = "Zamanı gelen hatırlatmalar (kısa çınlama sesi)"
         ch.setSound(
-            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
+            Uri.parse("android.resource://" + ctx.packageName + "/" + R.raw.chime),
             AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .build()
         )
         ch.enableVibration(true)
-        ch.vibrationPattern = longArrayOf(0, 500, 300, 500)
+        ch.vibrationPattern = longArrayOf(0, 150, 100, 150)
         ch.lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         nm.createNotificationChannel(ch)
     }
@@ -111,14 +128,19 @@ object Notifier {
                 )
             }
 
+            val title = if (r.isLocation()) "📍 " + r.placeName
+            else if (r.repeat == "SPACED") "🧠 Aralıklı tekrar " + r.stage + "/" + Spaced.DAYS.size
+            else if (r.repeat == "COUNTDOWN") "⏳ Geri sayım bitti"
+            else "Hatırlatma"
+
             val n = Notification.Builder(ctx, CH)
                 .setSmallIcon(R.drawable.ic_notif)
                 .setColor(0xFF7C5CFF.toInt())
-                .setContentTitle("Hatırlatma")
+                .setContentTitle(title)
                 .setContentText(r.text)
                 .setStyle(Notification.BigTextStyle().bigText(r.text))
                 .setContentIntent(open)
-                .setCategory(Notification.CATEGORY_ALARM)
+                .setCategory(Notification.CATEGORY_REMINDER)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setAutoCancel(false)
                 .addAction(0, "✔ Yaptım", act(ActionReceiver.DONE, 1))
@@ -159,10 +181,18 @@ class AlarmReceiver : BroadcastReceiver() {
         when (intent.action) {
             Scheduler.ACTION_FIRE -> {
                 r.nagCount = 0
+                if (r.repeat == "SPACED") r.stage++
                 Notifier.show(ctx, r)
-                if (r.repeat != "NONE") {
+                if (r.repeat == "DAILY" || r.repeat == "WEEKLY") {
                     r.time = advance(r.time, r.repeat)
                     Scheduler.schedule(ctx, r)
+                } else if (r.repeat == "SPACED") {
+                    if (r.stage < Spaced.DAYS.size) {
+                        r.time = Spaced.next(r.time, r.stage)
+                        Scheduler.schedule(ctx, r)
+                    } else if (!r.persistent) {
+                        r.done = true
+                    }
                 } else if (!r.persistent) {
                     r.done = true
                 }
@@ -195,8 +225,9 @@ class ActionReceiver : BroadcastReceiver() {
             DONE -> {
                 Scheduler.cancelNag(ctx, id)
                 r.nagCount = 0
-                if (r.repeat == "NONE") r.done = true
+                if (r.finishesOnDone()) r.done = true
                 Store.update(ctx, r)
+                if (r.isLocation()) Geo.remove(ctx, id)
             }
             SNOOZE -> {
                 r.nagCount = 0
@@ -214,7 +245,11 @@ class BootReceiver : BroadcastReceiver() {
         val now = System.currentTimeMillis()
         for (r in Store.all(ctx)) {
             if (r.done) continue
-            if (r.time <= now && r.repeat != "NONE") {
+            if (r.isLocation()) {
+                Geo.register(ctx, r)
+                continue
+            }
+            if (r.time <= now && (r.repeat == "DAILY" || r.repeat == "WEEKLY")) {
                 r.time = advance(r.time, r.repeat)
                 Store.update(ctx, r)
             }
