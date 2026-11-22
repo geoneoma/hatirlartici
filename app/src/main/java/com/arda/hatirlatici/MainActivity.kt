@@ -29,6 +29,7 @@ import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import com.google.android.gms.location.LocationServices
@@ -51,10 +52,23 @@ class MainActivity : Activity() {
     private var tab = 0 // 0 Aktif, 1 Sürekli, 2 Geri sayım, 3 Tamamlanan
     private val handler = Handler(Looper.getMainLooper())
     private val tickers = ArrayList<Pair<TextView, Long>>()
+    private var recoverTried = false
     private val tick: Runnable = object : Runnable {
         override fun run() {
             val now = System.currentTimeMillis()
-            for (pr in tickers) pr.first.text = formatRemaining(pr.second - now)
+            var late = false
+            for (pr in tickers) {
+                val rem = pr.second - now
+                pr.first.text = formatRemaining(rem)
+                if (rem <= -8000L) late = true
+            }
+            if (late && !recoverTried) {
+                // geri sayım bitti ama alarm hâlâ çalmadıysa uygulama kendisi haber versin
+                recoverTried = true
+                recoverMissed()
+                refresh()
+                return
+            }
             handler.postDelayed(this, 1000L)
         }
     }
@@ -165,6 +179,9 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        recoverTried = false
+        recoverMissed()
+        Pinned.update(this)
         refresh()
     }
 
@@ -383,7 +400,7 @@ class MainActivity : Activity() {
         row.addView(col, LinearLayout.LayoutParams(0, wrap, 1f))
 
         row.addView(pill("📍") { showPlaces() })
-        row.addView(pill("Test") { scheduleTest() })
+        row.addView(pill("⚙") { showSettings() })
         row.addView(pill("?") { showHelp() })
         return row
     }
@@ -598,6 +615,62 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun showSettings() {
+        val layout = LinearLayout(this)
+        layout.orientation = LinearLayout.VERTICAL
+        layout.setPadding(dp(24), dp(12), dp(24), 0)
+
+        val pin = Switch(this)
+        pin.text = "Kilit ekranında kalıcı bildirim"
+        pin.setTextColor(Color.WHITE)
+        pin.isChecked = AppSettings.pinned(this)
+        pin.setOnCheckedChangeListener { _, on ->
+            AppSettings.setPinned(this, on)
+            Pinned.update(this)
+        }
+        layout.addView(pin, LinearLayout.LayoutParams(match, wrap))
+        val pinHint = text("Geri sayım varsa saniye saniye akar, yoksa sıradaki hatırlatmayı gösterir.", 12f, cSub)
+        pinHint.setPadding(0, dp(2), 0, dp(16))
+        layout.addView(pinHint)
+
+        val loud = Switch(this)
+        loud.text = "Sessiz ve titreşim modunda da çınlasın"
+        loud.setTextColor(Color.WHITE)
+        loud.isChecked = AppSettings.loud(this)
+        loud.setOnCheckedChangeListener { _, on -> AppSettings.setLoud(this, on) }
+        layout.addView(loud, LinearLayout.LayoutParams(match, wrap))
+        val loudHint = text("Kapalıyken çınlama sadece telefon sesliyken çalar, sessizdeyken yalnızca titrer.", 12f, cSub)
+        loudHint.setPadding(0, dp(2), 0, dp(8))
+        layout.addView(loudHint)
+
+        val test = text("🔔  Test bildirimi gönder (10 sn sonra)", 14f, cA2, true)
+        test.setPadding(0, dp(14), 0, dp(10))
+        test.setOnClickListener { scheduleTest() }
+        layout.addView(test)
+
+        AlertDialog.Builder(this, dark)
+            .setTitle("Ayarlar")
+            .setView(layout)
+            .setPositiveButton("Tamam", null)
+            .show()
+    }
+
+    /** Alarm sistem tarafından çalıştırılamadıysa (telefon uykuya almış olabilir) uygulama açılınca ya da açıkken haber verir. */
+    private fun recoverMissed() {
+        val now = System.currentTimeMillis()
+        for (r in Store.all(this)) {
+            if (r.done || r.isLocation() || r.firedAt > 0L) continue
+            if (r.repeat != "NONE" && r.repeat != "COUNTDOWN") continue
+            if (r.time > now - 8000L) continue
+            Notifier.show(this, r)
+            r.firedAt = now
+            if (!r.persistent) r.done = true
+            Store.update(this, r)
+            if (r.persistent) Scheduler.nag(this, r, 5)
+            Diag.record(this, "alarm çalmamıştı, uygulama haber verdi (Samsung arka planı kısıtlıyor olabilir)")
+        }
+    }
+
     // 10 saniye sonra gerçek alarm yolunu dener (ekranı kilitleyip bekleyebilirsin)
     private fun scheduleTest() {
         val r = Store.add(this, "Deneme bildirimi 🎉", System.currentTimeMillis() + 10_000L, "NONE", false)
@@ -621,7 +694,7 @@ class MainActivity : Activity() {
                     "Bildirim gelmiyorsa:\n" +
                     "1) Bildirim iznini aç.\n" +
                     "2) Pil ayarlarında uygulamayı “Sınırsız” yap.\n" +
-                    "3) “Test” düğmesiyle dene; en alttaki “Son alarm” satırı neyin ters gittiğini gösterir."
+                    "3) ⚙ Ayarlar'daki test düğmesiyle dene; en alttaki “Son alarm” satırı neyin ters gittiğini gösterir."
             )
             .setPositiveButton("Bildirim ayarları") { _, _ -> openNotificationSettings() }
             .setNeutralButton("Pil ayarları") { _, _ -> openBatterySettings() }

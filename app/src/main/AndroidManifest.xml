@@ -34,7 +34,10 @@
         <receiver android:name=".AlarmReceiver" android:exported="false" />
         <receiver android:name=".ActionReceiver" android:exported="false" />
         <receiver android:name=".GeofenceReceiver" android:exported="false" />
-        <receiver android:name=".ReminderWidget" android:exported="false">
+        <receiver
+            android:name=".ReminderWidget"
+            android:exported="true"
+            android:label="Bugünün hatırlatmaları">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
@@ -42,7 +45,10 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_info" />
         </receiver>
-        <receiver android:name=".CountdownWidget" android:exported="false">
+        <receiver
+            android:name=".CountdownWidget"
+            android:exported="true"
+            android:label="Geri sayım">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>

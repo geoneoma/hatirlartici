@@ -83,22 +83,19 @@ object Scheduler {
 
 object Notifier {
     private const val CH = "reminders_v3"
+    private const val CH_LOUD = "reminders_v3_loud"
 
     private fun manager(ctx: Context): NotificationManager =
         ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-    fun ensureChannel(ctx: Context) {
-        val nm = manager(ctx)
-        // eski (alarm sesli) kanalları kaldır; kanal sesi sonradan değiştirilemez
-        nm.deleteNotificationChannel("reminders_v1")
-        nm.deleteNotificationChannel("reminders_v2")
-        if (nm.getNotificationChannel(CH) != null) return
-        val ch = NotificationChannel(CH, "Hatırlatmalar", NotificationManager.IMPORTANCE_HIGH)
+    private fun makeChannel(ctx: Context, nm: NotificationManager, id: String, name: String, usage: Int) {
+        if (nm.getNotificationChannel(id) != null) return
+        val ch = NotificationChannel(id, name, NotificationManager.IMPORTANCE_HIGH)
         ch.description = "Zamanı gelen hatırlatmalar (kısa çınlama sesi)"
         ch.setSound(
             Uri.parse("android.resource://" + ctx.packageName + "/" + R.raw.chime),
             AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                .setUsage(usage)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .build()
         )
@@ -108,10 +105,21 @@ object Notifier {
         nm.createNotificationChannel(ch)
     }
 
+    fun ensureChannel(ctx: Context) {
+        val nm = manager(ctx)
+        // eski (alarm sesli) kanalları kaldır; kanal sesi sonradan değiştirilemez
+        nm.deleteNotificationChannel("reminders_v1")
+        nm.deleteNotificationChannel("reminders_v2")
+        // normal: telefon sessizken çalmaz. loud: alarm ses seviyesinden çalar, sessizde de duyulur.
+        makeChannel(ctx, nm, CH, "Hatırlatmalar", AudioAttributes.USAGE_NOTIFICATION)
+        makeChannel(ctx, nm, CH_LOUD, "Hatırlatmalar (sessizde de çalar)", AudioAttributes.USAGE_ALARM)
+    }
+
     fun show(ctx: Context, r: Reminder) {
         val nm = manager(ctx)
         try {
             ensureChannel(ctx)
+            val chId = if (AppSettings.loud(ctx)) CH_LOUD else CH
 
             val open = PendingIntent.getActivity(
                 ctx, r.id, Intent(ctx, MainActivity::class.java),
@@ -133,7 +141,7 @@ object Notifier {
             else if (r.repeat == "COUNTDOWN") "⏳ Geri sayım bitti"
             else "Hatırlatma"
 
-            val n = Notification.Builder(ctx, CH)
+            val n = Notification.Builder(ctx, chId)
                 .setSmallIcon(R.drawable.ic_notif)
                 .setColor(0xFF7C5CFF.toInt())
                 .setContentTitle(title)
@@ -148,7 +156,7 @@ object Notifier {
                 .build()
             nm.notify(r.id, n)
 
-            val chan = nm.getNotificationChannel(CH)
+            val chan = nm.getNotificationChannel(chId)
             val msg = if (!nm.areNotificationsEnabled()) {
                 "bildirim izni KAPALI, gösterilemedi"
             } else if (chan != null && chan.importance == NotificationManager.IMPORTANCE_NONE) {
@@ -181,6 +189,7 @@ class AlarmReceiver : BroadcastReceiver() {
         when (intent.action) {
             Scheduler.ACTION_FIRE -> {
                 r.nagCount = 0
+                r.firedAt = System.currentTimeMillis()
                 if (r.repeat == "SPACED") r.stage++
                 Notifier.show(ctx, r)
                 if (r.repeat == "DAILY" || r.repeat == "WEEKLY") {
@@ -243,6 +252,7 @@ class BootReceiver : BroadcastReceiver() {
         val a = intent.action
         if (a != Intent.ACTION_BOOT_COMPLETED && a != Intent.ACTION_MY_PACKAGE_REPLACED) return
         val now = System.currentTimeMillis()
+        Pinned.update(ctx)
         for (r in Store.all(ctx)) {
             if (r.done) continue
             if (r.isLocation()) {

@@ -17,7 +17,8 @@ data class Reminder(
     var lat: Double = 0.0,
     var lng: Double = 0.0,
     var trigger: String = "ENTER", // ENTER veya EXIT
-    var startTime: Long = 0L      // oluşturulma zamanı (geri sayım ilerleme çubuğu için)
+    var startTime: Long = 0L,     // oluşturulma zamanı (geri sayım ilerleme çubuğu için)
+    var firedAt: Long = 0L        // alarm gerçekten çaldı mı? (0 = henüz çalmadı)
 ) {
     fun isLocation(): Boolean = placeName.isNotEmpty()
 
@@ -52,7 +53,9 @@ object Store {
                     lat = o.optDouble("lat", 0.0),
                     lng = o.optDouble("lng", 0.0),
                     trigger = o.optString("trigger", "ENTER"),
-                    startTime = o.optLong("start", 0L)
+                    startTime = o.optLong("start", 0L),
+                    // eski kayıtlarda alan yok: çalmış kabul et
+                    firedAt = if (o.has("fired")) o.getLong("fired") else 1L
                 )
             )
         }
@@ -77,12 +80,14 @@ object Store {
             o.put("lng", r.lng)
             o.put("trigger", r.trigger)
             o.put("start", r.startTime)
+            o.put("fired", r.firedAt)
             arr.put(o)
         }
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, arr.toString()).apply()
         try {
             ReminderWidget.refresh(ctx)
             CountdownWidget.refresh(ctx)
+            Pinned.update(ctx)
         } catch (e: Exception) {
             // widget güncellenemese de veri kaydedildi
         }
@@ -199,4 +204,19 @@ object Diag {
 
     fun msg(ctx: Context): String =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("diag_msg", "") ?: ""
+}
+
+/** Uygulama ayarları (ana ekrandaki ⚙ düğmesi). */
+object AppSettings {
+    private const val PREFS = "hatirlatici"
+
+    private fun p(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    /** Kilit ekranında kalıcı bildirim (geri sayım ya da sıradaki hatırlatma). */
+    fun pinned(ctx: Context): Boolean = p(ctx).getBoolean("pin_on", true)
+    fun setPinned(ctx: Context, v: Boolean) { p(ctx).edit().putBoolean("pin_on", v).apply() }
+
+    /** Sessiz/titreşim modunda da çınlasın mı? */
+    fun loud(ctx: Context): Boolean = p(ctx).getBoolean("loud_on", true)
+    fun setLoud(ctx: Context, v: Boolean) { p(ctx).edit().putBoolean("loud_on", v).apply() }
 }
