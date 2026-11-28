@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -49,6 +50,13 @@ class MainActivity : Activity() {
 
     private lateinit var content: LinearLayout
     private lateinit var input: EditText
+    private lateinit var remindersScroll: ScrollView
+    private lateinit var inputBar: View
+    private lateinit var notesScreen: NotesScreen
+    private lateinit var navBar: View
+    private val navItems = ArrayList<LinearLayout>()
+    private val navLabels = ArrayList<TextView>()
+    private var mainTab = 0 // 0 Hatırlatıcılar, 1 Notlar
     private var tab = 0 // 0 Aktif, 1 Sürekli, 2 Geri sayım, 3 Tamamlanan
     private val handler = Handler(Looper.getMainLooper())
     private val tickers = ArrayList<Pair<TextView, Long>>()
@@ -169,12 +177,87 @@ class MainActivity : Activity() {
         content.setPadding(dp(20), dp(20), dp(20), dp(130))
         scroll.addView(content)
         frame.addView(scroll, FrameLayout.LayoutParams(match, match))
+        remindersScroll = scroll
 
         val barLp = FrameLayout.LayoutParams(match, wrap, Gravity.BOTTOM)
         barLp.setMargins(dp(14), 0, dp(14), dp(14))
-        frame.addView(buildBottomBar(), barLp)
+        inputBar = buildBottomBar()
+        frame.addView(inputBar, barLp)
 
-        setContentView(frame)
+        notesScreen = NotesScreen(this)
+        notesScreen.view.visibility = View.GONE
+        frame.addView(notesScreen.view, FrameLayout.LayoutParams(match, match))
+
+        val root = LinearLayout(this)
+        root.orientation = LinearLayout.VERTICAL
+        root.setBackgroundColor(cBg)
+        root.addView(frame, LinearLayout.LayoutParams(match, 0, 1f))
+        navBar = buildNav()
+        root.addView(navBar, LinearLayout.LayoutParams(match, wrap))
+
+        // klavye açılınca alt menüyü gizle
+        root.viewTreeObserver.addOnGlobalLayoutListener {
+            val r = Rect()
+            root.getWindowVisibleDisplayFrame(r)
+            val screenH = resources.displayMetrics.heightPixels
+            val keyboard = screenH - r.bottom > screenH * 0.2
+            navBar.visibility = if (keyboard) View.GONE else View.VISIBLE
+        }
+
+        styleNav()
+        setContentView(root)
+    }
+
+    // ---------- alt menü: Hatırlatıcılar / Notlar ----------
+    private fun buildNav(): View {
+        val bar = LinearLayout(this)
+        bar.orientation = LinearLayout.HORIZONTAL
+        bar.setBackgroundColor(Color.parseColor("#151833"))
+        bar.setPadding(dp(14), dp(8), dp(14), dp(8))
+
+        val icons = arrayOf("🔔", "📝")
+        val names = arrayOf("Hatırlatıcılar", "Notlar")
+        for (i in 0..1) {
+            val item = LinearLayout(this)
+            item.orientation = LinearLayout.VERTICAL
+            item.gravity = Gravity.CENTER
+            item.setPadding(dp(8), dp(8), dp(8), dp(8))
+            val e = text(icons[i], 20f, Color.WHITE)
+            e.gravity = Gravity.CENTER
+            val l = text(names[i], 11f, cSub, true)
+            l.gravity = Gravity.CENTER
+            item.addView(e)
+            item.addView(l)
+            item.setOnClickListener { switchMain(i) }
+            navItems.add(item)
+            navLabels.add(l)
+            val lp = LinearLayout.LayoutParams(0, wrap, 1f)
+            lp.marginStart = dp(4)
+            lp.marginEnd = dp(4)
+            bar.addView(item, lp)
+        }
+        return bar
+    }
+
+    private fun styleNav() {
+        for (i in 0..1) {
+            if (i == mainTab) {
+                navItems[i].background = rounded(Color.parseColor("#337C5CFF"), 18)
+                navLabels[i].setTextColor(Color.WHITE)
+            } else {
+                navItems[i].background = null
+                navLabels[i].setTextColor(cSub)
+            }
+        }
+    }
+
+    private fun switchMain(tabIndex: Int) {
+        mainTab = tabIndex
+        remindersScroll.visibility = if (tabIndex == 0) View.VISIBLE else View.GONE
+        inputBar.visibility = if (tabIndex == 0) View.VISIBLE else View.GONE
+        notesScreen.view.visibility = if (tabIndex == 1) View.VISIBLE else View.GONE
+        styleNav()
+        if (tabIndex == 1) notesScreen.refresh() else refresh()
     }
 
     override fun onResume() {
@@ -183,6 +266,7 @@ class MainActivity : Activity() {
         recoverMissed()
         Pinned.update(this)
         refresh()
+        if (mainTab == 1) notesScreen.refresh()
     }
 
     override fun onPause() {
